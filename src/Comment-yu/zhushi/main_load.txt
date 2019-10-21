@@ -1,0 +1,38 @@
+Converter.cc  #opencv矩阵转化为g2o矩阵
+Frame.cc #底层
+FrameDrawer.cc
+Initializer.cc
+
+
+#System入口&进入Track.cc线程
+  GrabImageStere(imRectLeft, imRectRight) #程序图片入口
+  mImGray #转化为灰度图像
+  Frame(mImGray, imGrayRight, mpORBextractorLeft) #构造Frame  
+  StereInitialization（） #初始化函数
+  mbOnlyTracting() #相机位姿跟踪
+  UpdateLocalMap() #局部地图跟踪
+  SearchLocalPoints() #局部地图与当前帧的匹配
+  PoseOptimization() #最小化投影误差优化位姿 
+  #是否生成关键帧 
+  #生成关键帧 
+  KeyFrame（mCurrentFrame, mpMap, mpKeyFrameDB）
+
+#LocalMapping.cc线程
+  #mlNewKeyFrames关键帧进入
+  ProcessNewKeyFrame()#处理新关键帧
+  #剔除MapPoints
+  #生成MapPoints
+  #融合MapPoints
+  #和当前关键帧相连的关键帧以及MapPoints做局部优化
+  #剔除关键帧                                           
+
+#LocalClosing线程  闭环检测
+  #一系列关键帧检测与运算
+  #sim3计算
+
+#Opyimazer.cc 优化线程
+  GlobalBundleAdjustment() #Map中所有的MapPoints和关键帧做优化
+  LocalBundleAdjustment() #会在线程处理完队列中最后一关键帧
+  PoseOptimization #位姿优化
+  OptimizeEssentialGraph #在成功进行闭环检测后全局，BA优化前进行
+  OptimizeSim3 #会在筛选闭环候选帧时用于位姿Sim3优化
