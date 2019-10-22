@@ -315,20 +315,29 @@ void Tracking::Track()
                 }
                 else
                 {
-                    bOK = TrackWithMotionModel();
+                    bOK = TrackWithMotionModel();   //跟踪和定位同时进行 既跟踪又定位
                     if(!bOK)
+                        // rackReferenceKeyFrame是跟踪参考帧，不能根据固定运动速度模型预测当前帧的位姿态，通过BoW加速匹配（SearchByBoW）
+                        // 最后通过优化得到优化后的位姿
                         bOK = TrackReferenceKeyFrame();
                 }
             }
             else
-            {
+            {   // BOW搜索 PhP求解位姿 ×××××××××如果跟踪失败会触发Relocalization()
+                // Relocalization()干了两件事
+                // 1 调用KeyFrameDatabase.cc 通过DetectRelocalizationCandidates函数找匹配的候选帧 进行PnP求解找到（因乃而数？）数最多的
+                // 
                 bOK = Relocalization();
             }
         }
         else
         {
             // Localization Mode: Local Mapping is deactivated
-
+            // 只进行跟踪tracking，局部地图不工作
+            
+            // 步骤2.1 跟踪上一帧或者参考帧重定位
+            // 定位模式 定位模式下就是跟踪 
+            // Tracking跟丢了
             if(mState==LOST)
             {
                 bOK = Relocalization();
@@ -397,9 +406,16 @@ void Tracking::Track()
             }
         }
 
+        // 将最新帧的关键帧作为reference frame
         mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
+   
         // If we have an initial estimation of the camera pose and matching. Track the local map.
+        // 步骤2.2 在帧间匹配得到初始位姿后，现在对local map进行跟踪得到更多的匹配，并优化当前的位姿
+        // local map：当前帧，当期帧的MapPoints 当前关键帧与其他关键帧共权关系
+        // 在步骤2.1中主要是两两跟踪（但速度模型跟踪上一帧，跟踪参考帧），这里搜索局部关键帧后搜索所有局部MapPoints
+        // 然后将局部MapPoints的当前帧进行投影匹配，得到更多匹配的MapPoints后进行Pose优化
+        
         if(!mbOnlyTracking)
         {
             if(bOK)
@@ -410,6 +426,8 @@ void Tracking::Track()
             // mbVO true means that there are few matches to MapPoints in the map. We cannot retrieve
             // a local map and therefore we do not perform TrackLocalMap(). Once the system relocalizes
             // the camera we will use the local map again.
+            
+            // 重定位成功
             if(bOK && !mbVO)
                 bOK = TrackLocalMap();
         }
@@ -428,6 +446,7 @@ void Tracking::Track()
             // Update motion model
             if(!mLastFrame.mTcw.empty())
             {
+                // 步骤2.3 更新恒速运动模型TrackWithMotionModel中的mVelocity
                 cv::Mat LastTwc = cv::Mat::eye(4,4,CV_32F);
                 mLastFrame.GetRotationInverse().copyTo(LastTwc.rowRange(0,3).colRange(0,3));
                 mLastFrame.GetCameraCenter().copyTo(LastTwc.rowRange(0,3).col(3));
@@ -439,10 +458,12 @@ void Tracking::Track()
             mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.mTcw);
 
             // Clean VO matches
+            // 步骤2.4 清楚当前帧观测不到的那些map中的3D点
             for(int i=0; i<mCurrentFrame.N; i++)
             {
                 MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
                 if(pMP)
+                    // 主要为了排除UpdateLastFrame函数中为了跟踪增加的MapPoints
                     if(pMP->Observations()<1)
                     {
                         mCurrentFrame.mvbOutlier[i] = false;
@@ -451,6 +472,8 @@ void Tracking::Track()
             }
 
             // Delete temporal MapPoints
+            // 步骤2.5 清楚临时的MapPoints， 这些MapPoints在TrackingWithMotiModel中重生成（仅shang，仅双目和rgbd）
+            
             for(list<MapPoint*>::iterator lit = mlpTemporalPoints.begin(), lend =  mlpTemporalPoints.end(); lit!=lend; lit++)
             {
                 MapPoint* pMP = *lit;
@@ -459,6 +482,7 @@ void Tracking::Track()
             mlpTemporalPoints.clear();
 
             // Check if we need to insert a new keyframe
+            // 步骤2.6 检测并插入关键帧
             if(NeedNewKeyFrame())
                 CreateNewKeyFrame();
 
@@ -474,6 +498,8 @@ void Tracking::Track()
         }
 
         // Reset if the camera get lost soon after initialization
+        // 跟踪失败 并且relocation也没有搞定 只能重新Reset
+        
         if(mState==LOST)
         {
             if(mpMap->KeyFramesInMap()<=5)
