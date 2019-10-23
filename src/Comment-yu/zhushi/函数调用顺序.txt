@@ -3,6 +3,7 @@ Frame.cc #底层关键帧处理
 FrameDrawer.cc #绘制函数 项目中可省略
 Initializer.cc #初始化函数
  
+程序流程
 #System入口&进入Track.cc线程
   GrabImageStere(imRectLeft, imRectRight) #程序图片入口
   mImGray #转化为灰度图像
