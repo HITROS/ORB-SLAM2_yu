@@ -52,23 +52,30 @@ void LocalMapping::Run()
     while(1)
     {
         // Tracking will see that Local Mapping is busy
+        //告诉tracking线程 我这个线程正在处于繁忙状态
+        //本线程处理的关键帧都是tracking线程发过的
+        //在本线程还没处理完关键帧之前tracking线程最好不要发送太快
         SetAcceptKeyFrames(false);
 
         // Check if there are keyframes in the queue
         if(CheckNewKeyFrames())
         {
             // BoW conversion and insertion in Map
+            //计算关键帧特征点的Bow映射 将关键帧插入地图
             ProcessNewKeyFrame();
 
             // Check recent MapPoints
+            //相机运动过程中通过三角化回复出一些MapPoints
             MapPointCulling();
 
             // Triangulate new MapPoints
             CreateNewMapPoints();
 
+            // 已经处理完队列中的最后一个关键帧
             if(!CheckNewKeyFrames())
             {
                 // Find more matches in neighbor keyframes and fuse point duplications
+                // 检查幷融合当前关键帧与相邻关键帧重复的mapPoints
                 SearchInNeighbors();
             }
 
@@ -84,6 +91,7 @@ void LocalMapping::Run()
                 KeyFrameCulling();
             }
 
+            // 将当前关键帧加入到闭环检测队列中
             mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
         }
         else if(Stop())
@@ -127,16 +135,24 @@ bool LocalMapping::CheckNewKeyFrames()
 
 void LocalMapping::ProcessNewKeyFrame()
 {
+
+    // 步骤1：从缓冲队列中取出一帧关键帧
+    // Tracking线程向ocalmappoints插入关键帧在该队列中
     {
         unique_lock<mutex> lock(mMutexNewKFs);
+        //从列表中获得一个等待被插入的关键帧
         mpCurrentKeyFrame = mlNewKeyFrames.front();
         mlNewKeyFrames.pop_front();
     }
 
     // Compute Bags of Words structures
+    // 步骤2：计算该关键帧特征点的Bow映射关系
     mpCurrentKeyFrame->ComputeBoW();
 
     // Associate MapPoints to the new keyframe and update normal and descriptor
+    // 步骤3：跟踪局部地图过程中新匹配上的MapPoints和当前帧进行绑定
+    // 在TrackingLocalMap函数中将局部地图中的MapPoints与当前帧进行了匹配
+    // 但没有对这些匹配上的MapPoints与当前帧进行关联
     const vector<MapPoint*> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
 
     for(size_t i=0; i<vpMapPointMatches.size(); i++)
@@ -148,8 +164,11 @@ void LocalMapping::ProcessNewKeyFrame()
             {
                 if(!pMP->IsInKeyFrame(mpCurrentKeyFrame))
                 {
+                    // 添加观测
                     pMP->AddObservation(mpCurrentKeyFrame, i);
+                    // 获得该点的平均观测方向和观测距离范围
                     pMP->UpdateNormalAndDepth();
+                    // 加入关键帧后更新3d点的最佳描述子
                     pMP->ComputeDistinctiveDescriptors();
                 }
                 else // this can only happen for new stereo points inserted by the Tracking
@@ -644,7 +663,8 @@ void LocalMapping::KeyFrameCulling()
             continue;
         const vector<MapPoint*> vpMapPoints = pKF->GetMapPointMatches();
 
-        int nObs = 3;
+        int nObs = 3;    // 这个很重要 应该是一个需要修改的变量 
+                         // 连续被3帧观测到
         const int thObs=nObs;
         int nRedundantObservations=0;
         int nMPs=0;
@@ -681,6 +701,7 @@ void LocalMapping::KeyFrameCulling()
                                     break;
                             }
                         }
+                        // 该MapPoints至少被3个关键帧观测到
                         if(nObs>=thObs)
                         {
                             nRedundantObservations++;
@@ -689,7 +710,7 @@ void LocalMapping::KeyFrameCulling()
                 }
             }
         }  
-
+        // 如果90%的特征点被其他关键帧(至少3帧)观测到。则认为是冗余关键帧
         if(nRedundantObservations>0.9*nMPs)
             pKF->SetBadFlag();
     }
