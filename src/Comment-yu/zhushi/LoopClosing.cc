@@ -61,6 +61,9 @@ void LoopClosing::Run()
     while(1)
     {
         // Check if there are keyframes in the queue
+        // loopclosing中的关键帧都是localmapping线程发送过来的 localmapping时trcking发送过来的
+        // 在localMapping中通过insertkeyframe将关键帧插入闭环检测队列mlploopkeyframeQueue
+        // 闭环检测队列mlploopkeyframeQueue中的关键帧不为空
         if(CheckNewKeyFrames())
         {
             // Detect loop candidates and check covisibility consistency
@@ -103,6 +106,7 @@ bool LoopClosing::CheckNewKeyFrames()
 bool LoopClosing::DetectLoop()
 {
     {
+        // 从队列中取出一个关键帧
         unique_lock<mutex> lock(mMutexLoopQueue);
         mpCurrentKF = mlpLoopKeyFrameQueue.front();
         mlpLoopKeyFrameQueue.pop_front();
@@ -110,7 +114,8 @@ bool LoopClosing::DetectLoop()
         mpCurrentKF->SetNotErase();
     }
 
-    //If the map contains less than 10 KF or less than 10 KF have passed from last loop detection
+    // If the map contains less than 10 KF or less than 10 KF have passed from last loop detection
+    // 步骤1：如果距离上次闭环没多久（小于10帧）或者map中关键帧总共还没有10帧则不进行闭环
     if(mpCurrentKF->mnId<mLastLoopKFid+10)
     {
         mpKeyFrameDB->add(mpCurrentKF);
@@ -121,6 +126,7 @@ bool LoopClosing::DetectLoop()
     // Compute reference BoW similarity score
     // This is the lowest score to a connected keyframe in the covisibility graph
     // We will impose loop candidates to have a higher similarity than this
+    // 步骤2：遍历所有公视关键帧，计算当前关键帧与每个共视关键帧的bow相似度得分，幷得到最低得分
     const vector<KeyFrame*> vpConnectedKeyFrames = mpCurrentKF->GetVectorCovisibleKeyFrames();
     const DBoW2::BowVector &CurrentBowVec = mpCurrentKF->mBowVec;
     float minScore = 1;
@@ -137,6 +143,7 @@ bool LoopClosing::DetectLoop()
             minScore = score;
     }
 
+    // 步骤3：在所有关键帧中找出闭环备选帧
     // Query the database imposing the minimum score
     vector<KeyFrame*> vpCandidateKFs = mpKeyFrameDB->DetectLoopCandidates(mpCurrentKF, minScore);
 
@@ -153,6 +160,7 @@ bool LoopClosing::DetectLoop()
     // Each candidate expands a covisibility group (keyframes connected to the loop candidate in the covisibility graph)
     // A group is consistent with a previous group if they share at least a keyframe
     // We must detect a consistent loop in several consecutive keyframes to accept it
+    // 步骤4：在候选帧中检测具有连续性的候选帧
     mvpEnoughConsistentCandidates.clear();
 
     vector<ConsistentGroup> vCurrentConsistentGroups;
@@ -279,10 +287,12 @@ bool LoopClosing::ComputeSim3()
         nCandidates++;
     }
 
-    bool bMatch = false;
+    bool bMatch = false;  //用于标记是否还有一个候选帧通过sim3的求解与优化
 
     // Perform alternatively RANSAC iterations for each candidate
     // until one is succesful or all fail
+    // 一直循环所有的候选帧 每个候选帧迭代5次 如果5次跌送仍然得不到结果。就换下一个候选帧
+    ////        ////          ////这里应该是一个需要根据实际情况修改的地方
     while(nCandidates>0 && !bMatch)
     {
         for(int i=0; i<nInitialCandidates; i++)

@@ -75,14 +75,17 @@ void KeyFrameDatabase::clear()
 
 vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float minScore)
 {
+    // 退出所有与该相连的关键帧 这些相连的关键帧的都是局部链接。在闭环检测的时候会被剔除
     set<KeyFrame*> spConnectedKeyFrames = pKF->GetConnectedKeyFrames();
-    list<KeyFrame*> lKFsSharingWords;
+    list<KeyFrame*> lKFsSharingWords;   //用于保存可能与pKF形成回环的候选帧（只要有相同的word，且不属于局部相连帧）
 
     // Search all keyframes that share a word with current keyframes
     // Discard keyframes connected to the query keyframe
+    // 步骤1：找出和当前帧具有公共单词的关键帧（不包括与当前关键帧相连的关键帧）
     {
         unique_lock<mutex> lock(mMutex);
 
+        // words是检测图像是否匹配的枢纽， 遍历pKF中的每一个word
         for(DBoW2::BowVector::const_iterator vit=pKF->mBowVec.begin(), vend=pKF->mBowVec.end(); vit != vend; vit++)
         {
             list<KeyFrame*> &lKFs =   mvInvertedFile[vit->first];
@@ -90,10 +93,10 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
             for(list<KeyFrame*>::iterator lit=lKFs.begin(), lend= lKFs.end(); lit!=lend; lit++)
             {
                 KeyFrame* pKFi=*lit;
-                if(pKFi->mnLoopQuery!=pKF->mnId)
+                if(pKFi->mnLoopQuery!=pKF->mnId)   //pKF还没有标记为pKF的候选帧
                 {
                     pKFi->mnLoopWords=0;
-                    if(!spConnectedKeyFrames.count(pKFi))
+                    if(!spConnectedKeyFrames.count(pKFi))  //与pKF局部链接的关键帧不进入闭环候选帧
                     {
                         pKFi->mnLoopQuery=pKF->mnId;
                         lKFsSharingWords.push_back(pKFi);
@@ -109,6 +112,8 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
 
     list<pair<float,KeyFrame*> > lScoreAndMatch;
 
+
+    // 步骤2：统计所有闭环检测候选帧中与pKF具有共同单词最多的单词数
     // Only compare against those keyframes that share enough words
     int maxCommonWords=0;
     for(list<KeyFrame*>::iterator lit=lKFsSharingWords.begin(), lend= lKFsSharingWords.end(); lit!=lend; lit++)
@@ -122,6 +127,7 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
     int nscores=0;
 
     // Compute similarity score. Retain the matches whose score is higher than minScore
+    // 步骤3：遍历所有闭环检测候选帧，筛选出单词数大于minCommamdwords且单词匹配数大于mincorce插入ScoreAndMatch
     for(list<KeyFrame*>::iterator lit=lKFsSharingWords.begin(), lend= lKFsSharingWords.end(); lit!=lend; lit++)
     {
         KeyFrame* pKFi = *lit;
@@ -145,6 +151,8 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
     float bestAccScore = minScore;
 
     // Lets now accumulate score by covisibility
+    // 步骤4：具体而言 LScoreAndMatch中的每一个KeyFrame都把与自己共视程度最高的帧视为一组
+    // 每一组会计算组得分幷记录改组的分数值最高的KeyFrame，记录于AccScoreAndMatch
     for(list<pair<float,KeyFrame*> >::iterator it=lScoreAndMatch.begin(), itend=lScoreAndMatch.end(); it!=itend; it++)
     {
         KeyFrame* pKFi = it->second;
@@ -173,6 +181,7 @@ vector<KeyFrame*> KeyFrameDatabase::DetectLoopCandidates(KeyFrame* pKF, float mi
     }
 
     // Return all those keyframes with a score higher than 0.75*bestScore
+    // 0.75的阈值应该是比较重要的参数量，在应用时应该需要修改
     float minScoreToRetain = 0.75f*bestAccScore;
 
     set<KeyFrame*> spAlreadyAddedKF;

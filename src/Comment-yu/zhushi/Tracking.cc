@@ -947,7 +947,7 @@ bool Tracking::TrackWithMotionModel()
             else if(mCurrentFrame.mvpMapPoints[i]->Observations()>0)
                 nmatchesMap++;
         }
-    }    
+    }
 
     if(mbOnlyTracking)
     {
@@ -1095,19 +1095,29 @@ void Tracking::CreateNewKeyFrame()
 {
     if(!mpLocalMapper->SetNotStop(true))
         return;
-
+    //步骤1：将当前帧构造成关键帧
     KeyFrame* pKF = new KeyFrame(mCurrentFrame,mpMap,mpKeyFrameDB);
 
+
+    //步骤2：将当前帧设置为当前帧的参考关键帧
+    //在updatelocalkeyFrame函数中会将与当前关键帧共视程度最高的关键帧设定为当前帧的参考关键帧
     mpReferenceKF = pKF;
     mCurrentFrame.mpReferenceKF = pKF;
 
+    //这段代码和updatelastFrame中的那一部分的代码功能相同
+    //步骤3：对于双目或者rgbd摄像头 为当前帧的生成新的MapPoints
     if(mSensor!=System::MONOCULAR)
     {
+
+        // 根据Tcw计算Bow
         mCurrentFrame.UpdatePoseMatrices();
 
         // We sort points by the measured depth by the stereo/RGBD sensor.
         // We create all those MapPoints whose depth < mThDepth.
         // If there are less than 100 close points we create the 100 closest.
+
+        //步骤3.1 得到当前帧深度小于阈值的特征点
+        //创建新的MapPoints depth
         vector<pair<float,int> > vDepthIdx;
         vDepthIdx.reserve(mCurrentFrame.N);
         for(int i=0; i<mCurrentFrame.N; i++)
@@ -1121,8 +1131,10 @@ void Tracking::CreateNewKeyFrame()
 
         if(!vDepthIdx.empty())
         {
+            // 步骤3.2 按照深度从小到达排序
             sort(vDepthIdx.begin(),vDepthIdx.end());
 
+            // 步骤3.3 将距离比较近的点包装成mapPoints
             int nPoints = 0;
             for(size_t j=0; j<vDepthIdx.size();j++)
             {
@@ -1157,6 +1169,9 @@ void Tracking::CreateNewKeyFrame()
                     nPoints++;
                 }
 
+                //这里决定了双目地图点云的稠密程度
+                //但是仅仅为了让地图稠密直接改这里不太好
+                //因为这些mapPoints会参与之后整个slam过程
                 if(vDepthIdx[j].first>mThDepth && nPoints>100)
                     break;
             }
@@ -1259,7 +1274,7 @@ void Tracking::UpdateLocalPoints()
 }
 
 
-void Tracking::UpdateLocalKeyFrames()
+void Tracking::UpdateLocalKeyFrames()  //更新关键帧函数我们在另一个函数中详细注释
 {
     // Each map point vote for the keyframes in which it has been observed
     map<KeyFrame*,int> keyframeCounter;
@@ -1369,7 +1384,7 @@ void Tracking::UpdateLocalKeyFrames()
     }
 }
 
-bool Tracking::Relocalization()
+bool Tracking::Relocalization()    //重定位线程这里应该不涉及到修改
 {
     // Compute Bag of Words Vector
     mCurrentFrame.ComputeBoW();
@@ -1532,7 +1547,7 @@ bool Tracking::Relocalization()
 
 }
 
-void Tracking::Reset()
+void Tracking::Reset()     //重启函数这里应该不涉及到修改的问题
 {
 
     cout << "System Reseting" << endl;
