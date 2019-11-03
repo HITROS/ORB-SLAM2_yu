@@ -52,46 +52,59 @@ void LocalMapping::Run()
     while(1)
     {
         // Tracking will see that Local Mapping is busy
-        //告诉tracking线程 我这个线程正在处于繁忙状态
-        //本线程处理的关键帧都是tracking线程发过的
-        //在本线程还没处理完关键帧之前tracking线程最好不要发送太快
+        // 告诉Tracking，LocalMapping正处于繁忙状态，
+        // LocalMapping线程处理的关键帧都是Tracking线程发过的
+        // 在LocalMapping线程还没有处理完关键帧之前Tracking线程最好不要发送太快
         SetAcceptKeyFrames(false);
 
         // Check if there are keyframes in the queue
+        // 等待处理的关键帧列表不为空
         if(CheckNewKeyFrames())
         {
             // BoW conversion and insertion in Map
-            //计算关键帧特征点的Bow映射 将关键帧插入地图
+            // VI-A keyframe insertion
+            // 计算关键帧特征点的BoW映射，将关键帧插入地图
             ProcessNewKeyFrame();
 
             // Check recent MapPoints
-            //相机运动过程中通过三角化回复出一些MapPoints
+            // VI-B recent map points culling
+            // 剔除ProcessNewKeyFrame函数中引入的不合格MapPoints
             MapPointCulling();
 
             // Triangulate new MapPoints
+            // VI-C new map points creation
+            // 相机运动过程中与相邻关键帧通过三角化恢复出一些MapPoints
             CreateNewMapPoints();
 
-            // 已经处理完队列中的最后一个关键帧
+            // 已经处理完队列中的最后的一个关键帧
             if(!CheckNewKeyFrames())
             {
                 // Find more matches in neighbor keyframes and fuse point duplications
-                // 检查幷融合当前关键帧与相邻关键帧重复的mapPoints
+                // 检查并融合当前关键帧与相邻帧（两级相邻）重复的MapPoints
                 SearchInNeighbors();
             }
 
             mbAbortBA = false;
 
+            // 已经处理完队列中的最后的一个关键帧，并且闭环检测没有请求停止LocalMapping
             if(!CheckNewKeyFrames() && !stopRequested())
             {
-                // Local BA
+                // VI-D Local BA
                 if(mpMap->KeyFramesInMap()>2)
                     Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
 
                 // Check redundant local Keyframes
+                // VI-E local keyframes culling
+                // 检测并剔除当前帧相邻的关键帧中冗余的关键帧
+                // 剔除的标准是：该关键帧的90%的MapPoints可以被其它关键帧观测到
+                // trick! 
+                // Tracking中先把关键帧交给LocalMapping线程
+                // 并且在Tracking中InsertKeyFrame函数的条件比较松，交给LocalMapping线程的关键帧会比较密
+                // 在这里再删除冗余的关键帧
                 KeyFrameCulling();
             }
 
-            // 将当前关键帧加入到闭环检测队列中
+            // 将当前帧加入到闭环检测队列中
             mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
         }
         else if(Stop())
@@ -99,7 +112,8 @@ void LocalMapping::Run()
             // Safe area to stop
             while(isStopped() && !CheckFinish())
             {
-                usleep(3000);
+                // usleep(3000);
+                std::this_thread::sleep_for(std::chrono::milliseconds(3));
             }
             if(CheckFinish())
                 break;
@@ -107,13 +121,15 @@ void LocalMapping::Run()
 
         ResetIfRequested();
 
-        // Tracking will see that Local Mapping is busy
+        // Tracking will see that Local Mapping is not busy
         SetAcceptKeyFrames(true);
 
         if(CheckFinish())
             break;
 
-        usleep(3000);
+        //usleep(3000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+
     }
 
     SetFinish();
@@ -122,25 +138,33 @@ void LocalMapping::Run()
 void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexNewKFs);
+    // 将关键帧插入到列表中
     mlNewKeyFrames.push_back(pKF);
     mbAbortBA=true;
 }
 
-
+/**
+ * @brief 查看列表中是否有等待被插入的关键帧
+ * @return 如果存在，返回true
+ */
 bool LocalMapping::CheckNewKeyFrames()
 {
     unique_lock<mutex> lock(mMutexNewKFs);
     return(!mlNewKeyFrames.empty());
 }
 
+// 处理列表中的关键帧
+// 计算Bow，加速三角化新的MapPoints
+// 关联当前关键帧至MapPoints，并更新MapPoints的平均观测方向和观测距离范围
+// 插入关键帧，更新Covisibility图和Essential图
+
 void LocalMapping::ProcessNewKeyFrame()
 {
-
     // 步骤1：从缓冲队列中取出一帧关键帧
-    // Tracking线程向ocalmappoints插入关键帧在该队列中
+    // Tracking线程向LocalMapping中插入关键帧存在该队列中
     {
         unique_lock<mutex> lock(mMutexNewKFs);
-        //从列表中获得一个等待被插入的关键帧
+        // 从列表中获得一个等待被插入的关键帧
         mpCurrentKeyFrame = mlNewKeyFrames.front();
         mlNewKeyFrames.pop_front();
     }
@@ -150,8 +174,8 @@ void LocalMapping::ProcessNewKeyFrame()
     mpCurrentKeyFrame->ComputeBoW();
 
     // Associate MapPoints to the new keyframe and update normal and descriptor
-    // 步骤3：跟踪局部地图过程中新匹配上的MapPoints和当前帧进行绑定
-    // 在TrackingLocalMap函数中将局部地图中的MapPoints与当前帧进行了匹配
+    // 步骤3：跟踪局部地图过程中新匹配上的MapPoints和当前关键帧绑定
+    // 在TrackLocalMap函数中将局部地图中的MapPoints与当前帧进行了匹配，
     // 但没有对这些匹配上的MapPoints与当前帧进行关联
     const vector<MapPoint*> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
 
@@ -162,17 +186,23 @@ void LocalMapping::ProcessNewKeyFrame()
         {
             if(!pMP->isBad())
             {
+                // 非当前帧生成的MapPoints
+				// 为当前帧在tracking过程跟踪到的MapPoints更新属性
                 if(!pMP->IsInKeyFrame(mpCurrentKeyFrame))
                 {
                     // 添加观测
                     pMP->AddObservation(mpCurrentKeyFrame, i);
                     // 获得该点的平均观测方向和观测距离范围
                     pMP->UpdateNormalAndDepth();
-                    // 加入关键帧后更新3d点的最佳描述子
+                    // 加入关键帧后，更新3d点的最佳描述子
                     pMP->ComputeDistinctiveDescriptors();
                 }
                 else // this can only happen for new stereo points inserted by the Tracking
                 {
+                    // 当前帧生成的MapPoints
+                    // 将双目或RGBD跟踪过程中新插入的MapPoints放入mlpRecentAddedMapPoints，等待检查
+                    // CreateNewMapPoints函数中通过三角化也会生成MapPoints
+                    // 这些MapPoints都会经过MapPointCulling函数的检验
                     mlpRecentAddedMapPoints.push_back(pMP);
                 }
             }
@@ -180,9 +210,11 @@ void LocalMapping::ProcessNewKeyFrame()
     }    
 
     // Update links in the Covisibility Graph
+    // 步骤4：更新关键帧间的连接关系，Covisibility图和Essential图(tree)
     mpCurrentKeyFrame->UpdateConnections();
 
     // Insert Keyframe in Map
+    // 步骤5：将该关键帧插入到地图中
     mpMap->AddKeyFrame(mpCurrentKeyFrame);
 }
 
@@ -199,24 +231,32 @@ void LocalMapping::MapPointCulling()
         nThObs = 3;
     const int cnThObs = nThObs;
 
+	// 遍历等待检查的Mappoints
     while(lit!=mlpRecentAddedMapPoints.end())
     {
         MapPoint* pMP = *lit;
         if(pMP->isBad())
         {
+			// 步骤1：已经是坏点的mappoints直接从检查链表中删除
             lit = mlpRecentAddedMapPoints.erase(lit);
         }
         else if(pMP->GetFoundRatio()<0.25f )
         {
+			// 步骤2：将不满足的VI-B条件的mappoint剔除
             pMP->SetBadFlag();
             lit = mlpRecentAddedMapPoints.erase(lit);
         }
         else if(((int)nCurrentKFid-(int)pMP->mnFirstKFid)>=2 && pMP->Observations()<=cnThObs)
         {
+			// 步骤3：将不满足VI-B条件的MapPoint剔除
+            // VI-B 条件2：从该点建立开始，到现在已经过了不小于2个关键帧
+            // 但是观测到该点的关键帧数却不超过cnThObs帧，那么该点检验不合格
             pMP->SetBadFlag();
             lit = mlpRecentAddedMapPoints.erase(lit);
         }
         else if(((int)nCurrentKFid-(int)pMP->mnFirstKFid)>=3)
+			// 步骤4：从建立该点开始，已经过了3个关键帧而没有被剔除，则认为是质量高的点
+            // 因此没有SetBadFlag()，仅从队列中删除，放弃继续对该MapPoint的检测
             lit = mlpRecentAddedMapPoints.erase(lit);
         else
             lit++;

@@ -61,6 +61,8 @@ void Map::EraseKeyFrame(KeyFrame *pKF)
     // Delete the MapPoint
 }
 
+// 设置参考MapPoints，将用于DrawMapPoints函数画图
+// vpMPs Local MapPoints
 void Map::SetReferenceMapPoints(const vector<MapPoint *> &vpMPs)
 {
     unique_lock<mutex> lock(mMutexMap);

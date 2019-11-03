@@ -79,9 +79,20 @@ void KeyFrame::SetPose(const cv::Mat &Tcw_)
     Twc = cv::Mat::eye(4,4,Tcw.type());
     Rwc.copyTo(Twc.rowRange(0,3).colRange(0,3));
     Ow.copyTo(Twc.rowRange(0,3).col(3));
+    // center为相机坐标系（左目）下，立体相机中心的坐标
+    // 立体相机中心点坐标与左目相机坐标之间只是在x轴上相差mHalfBaseline,
+    // 因此可以看出，立体相机中两个摄像头的连线为x轴，正方向为左目相机指向右目相机
     cv::Mat center = (cv::Mat_<float>(4,1) << mHalfBaseline, 0 , 0, 1);
+    // 世界坐标系下，左目相机中心到立体相机中心的向量，方向由左目相机指向立体相机中心
     Cw = Twc*center;
 }
+
+/**
+    为关键帧之间添加连接
+    更新mConnectedKeyFrameWeights
+    pKF    关键帧
+    weight 权重，该关键帧与pKF共同观测到的3d点数量
+ **/
 
 cv::Mat KeyFrame::GetPose()
 {
@@ -140,9 +151,11 @@ void KeyFrame::UpdateBestCovisibles()
     unique_lock<mutex> lock(mMutexConnections);
     vector<pair<int,KeyFrame*> > vPairs;
     vPairs.reserve(mConnectedKeyFrameWeights.size());
+	// 取出所有连接的关键帧
     for(map<KeyFrame*,int>::iterator mit=mConnectedKeyFrameWeights.begin(), mend=mConnectedKeyFrameWeights.end(); mit!=mend; mit++)
        vPairs.push_back(make_pair(mit->second,mit->first));
-
+	
+	// 按照权重进行排序
     sort(vPairs.begin(),vPairs.end());
     list<KeyFrame*> lKFs;
     list<int> lWs;
@@ -152,6 +165,7 @@ void KeyFrame::UpdateBestCovisibles()
         lWs.push_front(vPairs[i].first);
     }
 
+	// 权重从大到小
     mvpOrderedConnectedKeyFrames = vector<KeyFrame*>(lKFs.begin(),lKFs.end());
     mvOrderedWeights = vector<int>(lWs.begin(), lWs.end());    
 }
@@ -170,6 +184,12 @@ vector<KeyFrame*> KeyFrame::GetVectorCovisibleKeyFrames()
     unique_lock<mutex> lock(mMutexConnections);
     return mvpOrderedConnectedKeyFrames;
 }
+
+// 得到与该关键帧连接的前N个关键帧(已按权值排序)
+// 如果连接的关键帧少于N，则返回所有连接的关键帧
+// N 前N个
+// 连接的关键帧
+
 
 vector<KeyFrame*> KeyFrame::GetBestCovisibilityKeyFrames(const int &N)
 {
@@ -198,6 +218,11 @@ vector<KeyFrame*> KeyFrame::GetCovisiblesByWeight(const int &w)
     }
 }
 
+//  得到该关键帧与pKF的权重
+//  pKF 关键帧
+//  return 权重
+
+
 int KeyFrame::GetWeight(KeyFrame *pKF)
 {
     unique_lock<mutex> lock(mMutexConnections);
@@ -206,6 +231,12 @@ int KeyFrame::GetWeight(KeyFrame *pKF)
     else
         return 0;
 }
+
+// Add MapPoint to KeyFrame
+// MP MapPoint
+// idx MapPoint在KeyFrame中的索引
+
+
 
 void KeyFrame::AddMapPoint(MapPoint *pMP, const size_t &idx)
 {
@@ -247,6 +278,11 @@ set<MapPoint*> KeyFrame::GetMapPoints()
     return s;
 }
 
+// 关键帧中，大于等于minObs的MapPoints的数量
+// minObs就是一个阈值，大于minObs就表示该MapPoint是一个高质量的MapPoint
+// 一个高质量的MapPoint会被多个KeyFrame观测到，
+// minObs 最小观测
+
 int KeyFrame::TrackedMapPoints(const int &minObs)
 {
     unique_lock<mutex> lock(mMutexFeatures);
@@ -286,6 +322,11 @@ MapPoint* KeyFrame::GetMapPoint(const size_t &idx)
     return mvpMapPoints[idx];
 }
 
+// 首先获得该关键帧的所有MapPoint点，统计观测到这些3d点的每个关键与其它所有关键帧之间的共视程度
+// 对每一个找到的关键帧，建立一条边，边的权重是该关键帧与当前关键帧公共3d点的个数。
+// 并且该权重必须大于一个阈值，如果没有超过该阈值的权重，那么就只保留权重最大的边（与其它关键帧的共视程度比较高）
+// 对这些连接按照权重从大到小进行排序，以方便将来的处理
+// 更新完covisibility图之后，如果没有初始化过，则初始化为连接权重最大的边（与其它关键帧共视程度最高的那个关键帧），类似于最大生成树
 void KeyFrame::UpdateConnections()
 {
     map<KeyFrame*,int> KFcounter;
@@ -482,6 +523,7 @@ void KeyFrame::SetBadFlag()
 
         // Assign at each iteration one children with a parent (the pair with highest covisibility weight)
         // Include that children as new parent candidate for the rest
+		// 如果这个关键帧有自己的孩子关键帧，告诉这些子关键帧，它们的父关键帧不行了，赶紧找新的父关键帧
         while(!mspChildrens.empty())
         {
             bool bContinue = false;
@@ -490,6 +532,7 @@ void KeyFrame::SetBadFlag()
             KeyFrame* pC;
             KeyFrame* pP;
 
+			// 遍历每一个子关键帧，让它们更新它们指向的父关键帧
             for(set<KeyFrame*>::iterator sit=mspChildrens.begin(), send=mspChildrens.end(); sit!=send; sit++)
             {
                 KeyFrame* pKF = *sit;
@@ -502,6 +545,14 @@ void KeyFrame::SetBadFlag()
                 {
                     for(set<KeyFrame*>::iterator spcit=sParentCandidates.begin(), spcend=sParentCandidates.end(); spcit!=spcend; spcit++)
                     {
+				    // 如果该帧的子节点和父节点（祖孙节点）之间存在连接关系（共视）
+                    // 举例：B-->A（B的父节点是A） C-->B（C的父节点是B） D--C（D与C相连） E--C（E与C相连） F--C（F与C相连） D-->A（D的父节点是A） E-->A（E的父节点是A）
+                    //      现在B挂了，于是C在与自己相连的D、E、F节点中找到父节点指向A的D
+                    //      此过程就是为了找到可以替换B的那个节点。
+                    // 上面例子中，B为当前要设置为SetBadFlag的关键帧
+                    //           A为spcit，也即sParentCandidates
+                    //           C为pKF,pC，也即mspChildrens中的一个
+                    //           D、E、F为vpConnected中的变量，由于C与D间的权重 比 C与E间的权重大，因此D为pP
                         if(vpConnected[i]->mnId == (*spcit)->mnId)
                         {
                             int w = pKF->GetWeight(vpConnected[i]);
@@ -519,8 +570,11 @@ void KeyFrame::SetBadFlag()
 
             if(bContinue)
             {
+                // 因为父节点死了，并且子节点找到了新的父节点，子节点更新自己的父节点
                 pC->ChangeParent(pP);
+                // 因为子节点找到了新的父节点并更新了父节点，那么该子节点升级，作为其它子节点的备选父节点
                 sParentCandidates.insert(pC);
+                // 该子节点处理完毕
                 mspChildrens.erase(pC);
             }
             else
@@ -617,6 +671,11 @@ cv::Mat KeyFrame::UnprojectStereo(int i)
     const float z = mvDepth[i];
     if(z>0)
     {
+		// 由2维图像反投影到相机坐标系
+        // mvDepth是在ComputeStereoMatches函数中求取的
+        // mvDepth对应的校正前的特征点，因此这里对校正前特征点反投影
+        // 可在Frame::UnprojectStereo中却是对校正后的特征点mvKeysUn反投影
+        // 在ComputeStereoMatches函数中应该对校正后的特征点求深度？？
         const float u = mvKeys[i].pt.x;
         const float v = mvKeys[i].pt.y;
         const float x = (u-cx)*z*invfx;
